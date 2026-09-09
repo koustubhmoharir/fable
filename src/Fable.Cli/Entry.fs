@@ -75,6 +75,7 @@ let knownCliArgs () =
         [ "--typedArrays" ], [ "Compile numeric arrays as JS typed arrays (default is true)" ]
         [ "--watch" ], [ "Alias of watch command" ]
         [ "--watchDelay" ], [ "Delay in ms before recompiling after a file changes (default 200)" ]
+        [ "--signalFile" ], [ "Watch only this file and compile when it is touched" ]
         [], []
         [ "--run" ], [ "The command after the argument will be executed after compilation" ]
         [ "--runFast" ], [ "The command after the argument will be executed BEFORE compilation" ]
@@ -393,8 +394,15 @@ type Runner =
                 else
                     None
 
+            let signalFile = args.Value "--signalFile" |> Option.map normalizeAbsolutePath
+
+            do!
+                match signalFile, watch with
+                | Some _, false -> Error("--signalFile requires watch mode")
+                | _ -> Ok()
+
             let startCompilation () =
-                State.Create(cliArgs, ?watchDelay = watchDelay)
+                State.Create(cliArgs, ?watchDelay = watchDelay, ?signalFile = signalFile)
                 |> startCompilationAsync
                 |> Async.RunSynchronously
 

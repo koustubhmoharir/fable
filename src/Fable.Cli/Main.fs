@@ -14,6 +14,7 @@ open Fable.Transforms
 open Fable.Transforms.State
 open Fable.Compiler.ProjectCracker
 open Fable.Compiler.Util
+open Fable.Cli.Fork.SignalFileWatcher
 
 module private Util =
     type PathResolver with
@@ -320,8 +321,11 @@ open Util
 open FileWatcher
 open FileWatcherUtil
 
-type FsWatcher(delayMs: int) =
+type FsWatcher(delayMs: int, ?signalFile: string) =
     let globFilters = [ "*.fs"; "*.fsi"; "*.fsx"; "*.fsproj" ]
+
+    let signalFileWatcher =
+        signalFile |> Option.map (fun path -> Watcher(delayMs, path))
 
     let createWatcher () =
         let usePolling =
@@ -345,38 +349,53 @@ type FsWatcher(delayMs: int) =
 
         watcher
 
-    let watcher = createWatcher ()
+    let watcher =
+        if signalFile.IsSome then
+            None
+        else
+            Some(createWatcher ())
 
     let observable =
-        Observable.SingleObservable(fun () -> watcher.EnableRaisingEvents <- false)
+        watcher
+        |> Option.map (fun watcher -> Observable.SingleObservable(fun () -> watcher.EnableRaisingEvents <- false))
 
     do
-        watcher.OnFileChange.Add(fun path -> observable.Trigger(path))
+        match watcher, observable with
+        | Some watcher, Some observable ->
+            watcher.OnFileChange.Add(fun path -> observable.Trigger(path))
+            watcher.OnError.Add(fun ev -> Log.verbose (lazy $"[WATCHER] {ev.GetException().Message}"))
+        | _ -> ()
 
-        watcher.OnError.Add(fun ev -> Log.verbose (lazy $"[WATCHER] {ev.GetException().Message}"))
-
-    member _.BasePath = watcher.BasePath
+    member _.BasePath =
+        match signalFileWatcher, watcher with
+        | Some watcher, _ -> watcher.BasePath
+        | None, Some watcher -> watcher.BasePath
+        | _ -> failwith "Fable watcher was not initialized"
 
     member _.Observe(filesToWatch: string list) =
-        let commonBaseDir = getCommonBaseDir filesToWatch
+        match signalFileWatcher, watcher, observable with
+        | Some signalFileWatcher, _, _ -> signalFileWatcher.Observe(filesToWatch)
+        | None, Some watcher, Some observable ->
+            let commonBaseDir = getCommonBaseDir filesToWatch
 
-        // It may happen we get the same path with different case in case-insensitive file systems
-        // https://github.com/fable-compiler/Fable/issues/2277#issuecomment-737748220
-        let filePaths = caseInsensitiveSet filesToWatch
-        watcher.BasePath <- commonBaseDir
-        watcher.EnableRaisingEvents <- true
+            // It may happen we get the same path with different case in case-insensitive file systems
+            // https://github.com/fable-compiler/Fable/issues/2277#issuecomment-737748220
+            let filePaths = caseInsensitiveSet filesToWatch
+            watcher.BasePath <- commonBaseDir
+            watcher.EnableRaisingEvents <- true
 
-        observable
-        |> Observable.choose (fun fullPath ->
-            let fullPath = Path.normalizePath fullPath
+            observable
+            |> Observable.choose (fun fullPath ->
+                let fullPath = Path.normalizePath fullPath
 
-            if filePaths.Contains(fullPath) then
-                Some fullPath
-            else
-                None
-        )
-        |> Observable.throttle delayMs
-        |> Observable.map caseInsensitiveSet
+                if filePaths.Contains(fullPath) then
+                    Some fullPath
+                else
+                    None
+            )
+            |> Observable.throttle delayMs
+            |> Observable.map caseInsensitiveSet
+        | _ -> failwith "Fable watcher was not initialized"
 
 type ProjectCracked(cliArgs: CliArgs, crackerResponse: CrackerResponse, sourceFiles: Fable.Compiler.File array) =
 
@@ -820,9 +839,9 @@ type Watcher =
         OnChange: ISet<string> -> unit
     }
 
-    static member Create(watchDelay) =
+    static member Create(watchDelay, ?signalFile) =
         {
-            Watcher = FsWatcher(watchDelay)
+            Watcher = FsWatcher(watchDelay, ?signalFile = signalFile)
             Subscription =
                 { new IDisposable with
                     member _.Dispose() = ()
@@ -896,12 +915,14 @@ type State =
                 this.DeduplicateDic.GetOrAdd(importDir, (fun _ -> set this.DeduplicateDic.Values |> addTargetDir))
         }
 
-    static member Create(cliArgs, ?watchDelay, ?recompileAllFiles) =
+    static member Create(cliArgs, ?watchDelay, ?recompileAllFiles, ?signalFile) =
         {
             CliArgs = cliArgs
             ProjectCrackedAndFableCompiler = None
             WatchDependencies = Map.empty
-            Watcher = watchDelay |> Option.map Watcher.Create
+            Watcher =
+                watchDelay
+                |> Option.map (fun delay -> Watcher.Create(delay, ?signalFile = signalFile))
             DeduplicateDic = ConcurrentDictionary()
             PendingFiles = [||]
             SilentCompilation = false
