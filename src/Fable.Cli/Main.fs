@@ -15,6 +15,7 @@ open Fable.Transforms.State
 open Fable.Compiler.ProjectCracker
 open Fable.Compiler.Util
 open Fable.Cli.Fork.SignalFileWatcher
+open Fable.Cli.Fork.WatcherChanges
 
 module private Util =
     type PathResolver with
@@ -1687,7 +1688,13 @@ let startCompilationAsync state =
                                         match state.Watcher with
                                         // Discard changes that may have happened before we restarted the watcher
                                         | Some w when w.StartedAt < timestamp ->
-                                            // TODO: Get all messages until QueueLength is 0 before starting the compilation cycle?
+                                            let! timestamp, changes =
+                                                drainPending
+                                                    (fun () -> agent.TryReceive(0))
+                                                    (fun (Changes(timestamp, changes)) -> timestamp, changes)
+                                                    timestamp
+                                                    changes
+
                                             if changes.Count > 0 then
                                                 Log.verbose (
                                                     lazy
