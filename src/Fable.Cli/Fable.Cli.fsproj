@@ -29,6 +29,7 @@
     <Compile Include="FileWatchers.fs" />
     <Compile Include="..\..\fork\SignalFileWatcher.fs" />
     <Compile Include="..\..\fork\WatcherChanges.fs" />
+    <Compile Include="..\..\fork\WatchEvents.fs" />
     <Compile Include="Pipeline.fs" />
     <Compile Include="Main.fs" />
     <Compile Include="CustomLogging.fs" />

@@ -16,6 +16,7 @@ open Fable.Compiler.ProjectCracker
 open Fable.Compiler.Util
 open Fable.Cli.Fork.SignalFileWatcher
 open Fable.Cli.Fork.WatcherChanges
+open Fable.Cli.Fork.WatchEvents
 
 module private Util =
     type PathResolver with
@@ -1702,6 +1703,8 @@ let startCompilationAsync state =
                                                 )
 
                                             let! compilationResult = compilationCycle state changes
+
+                                            compilationFinished timestamp (compilationResult.ExitCode = 0)
 
                                             Log.always $"Watching {File.relPathToCurDir w.Watcher.BasePath}"
 
