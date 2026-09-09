@@ -3,6 +3,7 @@ module Fable.Cli.Fork.SignalFileWatcher
 open System
 open System.Collections.Generic
 open System.IO
+open System.Security.Cryptography
 
 open Fable.Cli.FileWatcher
 open Fable.Compiler.Util
@@ -27,14 +28,63 @@ let private createWatcher signalFileName : IFileSystemWatcher =
     else
         upcast new DotnetFileWatcher([ signalFileName ])
 
-/// Watches one file and emits the current project file set when it changes.
-/// The source tree is deliberately not watched in this mode: touching the
-/// signal file is the only event that releases a compilation cycle.
+/// Watches one file and emits the files whose content changed since the last
+/// signal. The source tree is deliberately not watched in this mode: touching
+/// the signal file is the only event that releases a compilation cycle.
 type Watcher(delayMs: int, signalFilePath: string) =
     let signalFilePath = Path.GetFullPath(signalFilePath)
     let signalDirectory = Path.GetDirectoryName(signalFilePath)
     let signalFileName = Path.GetFileName(signalFilePath)
     let watcher = createWatcher signalFileName
+    let snapshotLock = obj ()
+    let mutable filesToCompile = []
+    let mutable knownSnapshot: Dictionary<string, string option> option = None
+
+    let fileHash path =
+        if File.Exists(path) then
+            use stream = File.OpenRead(path)
+            use sha256 = SHA256.Create()
+            sha256.ComputeHash(stream) |> Convert.ToHexString |> Some
+        else
+            None
+
+    let snapshot (files: string list) : Dictionary<string, string option> =
+        let result = Dictionary<string, string option>(StringComparer.OrdinalIgnoreCase)
+
+        for path in files do
+            result.[path] <- fileHash path
+
+        result
+
+    let changedFiles
+        (previous: Dictionary<string, string option>)
+        (current: Dictionary<string, string option>)
+        : ISet<string>
+        =
+        let paths = HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        let changes = HashSet<string>(StringComparer.OrdinalIgnoreCase)
+
+        for KeyValue(path, _) in previous do
+            paths.Add(path) |> ignore
+
+        for KeyValue(path, _) in current do
+            paths.Add(path) |> ignore
+
+        for path in paths do
+            let previousValue =
+                match previous.TryGetValue(path) with
+                | true, value -> Some value
+                | false, _ -> None
+
+            let currentValue =
+                match current.TryGetValue(path) with
+                | true, value -> Some value
+                | false, _ -> None
+
+            if previousValue <> currentValue then
+                changes.Add(path) |> ignore
+
+        changes :> ISet<string>
 
     do
         if
@@ -48,9 +98,27 @@ type Watcher(delayMs: int, signalFilePath: string) =
 
     member _.BasePath = watcher.BasePath
 
-    member _.Observe(filesToCompile: string list) =
-        let currentFiles =
-            HashSet<string>(filesToCompile, StringComparer.OrdinalIgnoreCase) :> ISet<string>
+    member _.Observe(filesToObserve: string list) =
+        let currentFiles = filesToObserve |> List.map Path.GetFullPath
+
+        lock
+            snapshotLock
+            (fun () ->
+                filesToCompile <- currentFiles
+
+                match knownSnapshot with
+                | None -> knownSnapshot <- Some(snapshot currentFiles)
+                | Some previous ->
+                    let current = snapshot currentFiles
+
+                    for path in previous.Keys |> Seq.toArray do
+                        if not (current.ContainsKey(path)) then
+                            previous.Remove(path) |> ignore
+
+                    for KeyValue(path, value) in current do
+                        if not (previous.ContainsKey(path)) then
+                            previous.[path] <- value
+            )
 
         watcher.OnFileChange
         |> Observable.choose (fun path ->
@@ -60,4 +128,14 @@ type Watcher(delayMs: int, signalFilePath: string) =
                 None
         )
         |> Observable.throttle delayMs
-        |> Observable.map (fun _ -> currentFiles)
+        |> Observable.map (fun _ ->
+            lock
+                snapshotLock
+                (fun () ->
+                    let previous = knownSnapshot |> Option.defaultWith (fun () -> Dictionary())
+                    let current = snapshot filesToCompile
+                    let changes = changedFiles previous current
+                    knownSnapshot <- Some current
+                    changes
+                )
+        )
