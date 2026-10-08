@@ -3747,6 +3747,8 @@ let transformFile (com: Fable.Compiler) (file: File) : Beam.ErlModule =
             member _.TryGetEntity(ref) = com.TryGetEntity(ref)
             member _.GetInlineExpr(key) = com.GetInlineExpr(key)
             member _.AddWatchDependency(file) = com.AddWatchDependency(file)
+            member _.AddImportDependency(file) = com.AddImportDependency(file)
+            member _.SetExportNames(names) = com.SetExportNames(names)
 
             member _.AddLog(msg, severity, ?range, ?fileName, ?tag) =
                 com.AddLog(msg, severity, ?range = range, ?fileName = fileName, ?tag = tag)

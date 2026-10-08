@@ -17,6 +17,7 @@ open Fable.Compiler.Util
 open Fable.Cli.Fork.SignalFileWatcher
 open Fable.Cli.Fork.WatcherChanges
 open Fable.Cli.Fork.WatchEvents
+open Fable.Cli.Fork.ExportNames
 
 module private Util =
     type PathResolver with
@@ -251,6 +252,8 @@ module private Util =
                             Logs = com.Logs
                             InlineExprs = Array.empty<string * InlineExpr>
                             WatchDependencies = com.WatchDependencies
+                            ImportDependencies = com.ImportDependencies
+                            ExportNames = com.ExportNames
                         |}
             with e ->
                 return
@@ -430,6 +433,18 @@ type ProjectCracked(cliArgs: CliArgs, crackerResponse: CrackerResponse, sourceFi
             else
                 None
 
+        let importDependencies =
+            if cliArgs.IsWatch then
+                Some(HashSet())
+            else
+                None
+
+        let exportNames =
+            if cliArgs.IsWatch && cliArgs.CompilerOptions.Language = JavaScript then
+                Some(HashSet())
+            else
+                None
+
         CompilerImpl(
             currentFile,
             project,
@@ -437,7 +452,9 @@ type ProjectCracked(cliArgs: CliArgs, crackerResponse: CrackerResponse, sourceFi
             fableLibDir,
             crackerResponse.OutputType,
             ?outDir = cliArgs.OutDir,
-            ?watchDependencies = watchDependencies
+            ?watchDependencies = watchDependencies,
+            ?importDependencies = importDependencies,
+            ?exportNames = exportNames
         )
 
     member _.MapSourceFiles(f) =
@@ -489,6 +506,8 @@ type FableCompileResult =
             Logs: LogEntry[]
             InlineExprs: (string * InlineExpr)[]
             WatchDependencies: string[]
+            ImportDependencies: string[]
+            ExportNames: string[]
         |},
         {|
             File: string
@@ -887,6 +906,8 @@ type State =
         CliArgs: CliArgs
         ProjectCrackedAndFableCompiler: (ProjectCracked * FableCompiler) option
         WatchDependencies: Map<string, string[]>
+        ImportDependencies: Map<string, string[]>
+        ExportNames: Map<string, string[]>
         PendingFiles: string[]
         DeduplicateDic: ConcurrentDictionary<string, string>
         Watcher: Watcher option
@@ -922,6 +943,8 @@ type State =
             CliArgs = cliArgs
             ProjectCrackedAndFableCompiler = None
             WatchDependencies = Map.empty
+            ImportDependencies = Map.empty
+            ExportNames = Map.empty
             Watcher =
                 watchDelay
                 |> Option.map (fun delay -> Watcher.Create(delay, ?signalFile = signalFile))
@@ -1473,41 +1496,76 @@ let private compilationCycle (state: State) (changes: ISet<string>) =
                 | None -> FableCompiler.Init(projCracked)
                 | Some fableCompiler -> async.Return fableCompiler
 
-            let! fsharpLogs, fableResults =
-                fableCompiler.StartCompilation(
-                    projCracked.SourceFiles, // Make sure to pass the up-to-date source files (with cleared hashes for changed files)
-                    filesToCompile,
-                    state.GetPathResolver(?precompiledInfo = projCracked.PrecompiledInfo),
-                    state.SilentCompilation,
-                    fun f -> state.TriggeredByDependency(f, changes)
-                )
+            let rec compileToFixpoint (state: State) (filesToCompile: string array) logs allResults =
+                async {
+                    let! fsharpLogs, fableResults =
+                        fableCompiler.StartCompilation(
+                            projCracked.SourceFiles,
+                            filesToCompile,
+                            state.GetPathResolver(?precompiledInfo = projCracked.PrecompiledInfo),
+                            state.SilentCompilation,
+                            fun f -> state.TriggeredByDependency(f, changes)
+                        )
 
-            let logs, watchDependencies =
-                ((fsharpLogs, state.WatchDependencies), fableResults)
-                ||> List.fold (fun (logs, deps) ->
-                    function
-                    | Ok res ->
-                        let logs = Array.append logs res.Logs
-                        let deps = Map.add res.File res.WatchDependencies deps
-                        logs, deps
-                    | Error e ->
-                        let log =
-                            match e.Exception with
-                            | Fable.FableError msg -> LogEntry.MakeError(msg, fileName = e.File)
-                            | ex ->
-                                let msg = ex.Message + Log.newLine + ex.StackTrace
+                    let mutable watchDependencies = state.WatchDependencies
+                    let mutable importDependencies = state.ImportDependencies
+                    let mutable exportNames = state.ExportNames
+                    let changedExports = HashSet<string>()
+                    let mutable hasError = false
+                    let mutable logs = Array.append logs fsharpLogs
+                    let allResults = List.append allResults fableResults
 
-                                LogEntry.MakeError(msg, fileName = e.File, tag = "EXCEPTION")
+                    for result in fableResults do
+                        match result with
+                        | Ok res ->
+                            watchDependencies <- Map.add res.File res.WatchDependencies watchDependencies
+                            importDependencies <- Map.add res.File res.ImportDependencies importDependencies
 
-                        Array.append logs [| log |], deps
-                )
+                            match Map.tryFind res.File exportNames with
+                            | Some previous when Set.ofArray previous <> Set.ofArray res.ExportNames ->
+                                changedExports.Add(res.File) |> ignore
+                            | _ -> ()
 
-            let state =
-                { state with
-                    PendingFiles = [||]
-                    WatchDependencies = watchDependencies
-                    SilentCompilation = false
+                            exportNames <- Map.add res.File res.ExportNames exportNames
+                            logs <- Array.append logs res.Logs
+                        | Error e ->
+                            hasError <- true
+
+                            let log =
+                                match e.Exception with
+                                | Fable.FableError msg -> LogEntry.MakeError(msg, fileName = e.File)
+                                | ex ->
+                                    let msg = ex.Message + Log.newLine + ex.StackTrace
+                                    LogEntry.MakeError(msg, fileName = e.File, tag = "EXCEPTION")
+
+                            logs <- Array.append logs [| log |]
+
+                    let state =
+                        { state with
+                            PendingFiles = [||]
+                            WatchDependencies = watchDependencies
+                            ImportDependencies = importDependencies
+                            ExportNames = exportNames
+                            SilentCompilation = false
+                        }
+
+                    let importerFiles =
+                        if hasError || changedExports.Count = 0 then
+                            [||]
+                        else
+                            projCracked.SourceFilePaths
+                            |> Array.filter (fun file ->
+                                Map.tryFind file importDependencies
+                                |> Option.exists (Array.exists changedExports.Contains)
+                            )
+
+                    if importerFiles.Length = 0 then
+                        return state, logs, allResults
+                    else
+                        return! compileToFixpoint state importerFiles logs allResults
                 }
+
+            let! state, logs, fableResults = compileToFixpoint state filesToCompile [||] []
 
             let filesToCompile = set filesToCompile
 

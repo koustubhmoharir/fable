@@ -2142,6 +2142,8 @@ type PhpCompiler(com: Fable.Compiler) =
             com.AddLog(msg, severity, ?range = rang, ?fileName = fileName, ?tag = tag)
 
         member this.AddWatchDependency(file) = com.AddWatchDependency(file)
+        member this.AddImportDependency(file) = com.AddImportDependency(file)
+        member this.SetExportNames(names) = com.SetExportNames(names)
 
         member this.GetImplementationFile(fileName) = com.GetImplementationFile(fileName)
 

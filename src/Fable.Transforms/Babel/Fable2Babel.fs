@@ -4993,6 +4993,8 @@ module Compiler =
             member _.GetInlineExpr(fullName) = com.GetInlineExpr(fullName)
 
             member _.AddWatchDependency(fileName) = com.AddWatchDependency(fileName)
+            member _.AddImportDependency(fileName) = com.AddImportDependency(fileName)
+            member _.SetExportNames(names) = com.SetExportNames(names)
 
             member _.AddLog(msg, severity, ?range, ?fileName: string, ?tag: string) =
                 com.AddLog(msg, severity, ?range = range, ?fileName = fileName, ?tag = tag)

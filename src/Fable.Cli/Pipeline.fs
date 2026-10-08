@@ -5,6 +5,7 @@ open Fable
 open Fable.AST
 open Fable.Transforms
 open Fable.Compiler.Util
+open Fable.Cli.Fork.ExportNames
 
 type Stream =
     static member WriteToFile(memoryStream: IO.Stream, filePath: string) =
@@ -175,6 +176,8 @@ module Js =
                 FSharp2Fable.Compiler.transformFile com
                 |> FableTransforms.transformFile com
                 |> Fable2Babel.Compiler.transformFile com
+
+            com.SetExportNames(fromProgram babel)
 
             if not (isSilent || babel.IsEmpty) then
                 use writer = new BabelWriter(com, cliArgs, pathResolver, com.CurrentFile, outPath)

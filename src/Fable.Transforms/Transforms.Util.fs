@@ -1280,10 +1280,12 @@ module AST =
             None
         )
 
-    let makeInternalMemberImport com t membRef (selector: string) (path: string) =
+    let makeInternalMemberImport (com: Compiler) t membRef (selector: string) (path: string) =
+        com.AddImportDependency(path)
         MemberImport(membRef) |> makeInternalImport com t selector path
 
-    let makeInternalClassImport com entRef (selector: string) (path: string) =
+    let makeInternalClassImport (com: Compiler) entRef (selector: string) (path: string) =
+        com.AddImportDependency(path)
         ClassImport(entRef) |> makeInternalImport com Any selector path
 
     let makeCallInfo thisArg args sigArgTypes =

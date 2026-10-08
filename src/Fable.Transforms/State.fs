@@ -282,6 +282,8 @@ type CompilerImpl
         ?outType: OutputType,
         ?outDir: string,
         ?watchDependencies: HashSet<string>,
+        ?importDependencies: HashSet<string>,
+        ?exportNames: HashSet<string>,
         ?logs: ResizeArray<LogEntry>,
         ?isPrecompilingInlineFunction: bool
     )
@@ -297,6 +299,16 @@ type CompilerImpl
     member _.WatchDependencies =
         match watchDependencies with
         | Some w -> Array.ofSeq w
+        | None -> [||]
+
+    member _.ImportDependencies =
+        match importDependencies with
+        | Some dependencies -> Array.ofSeq dependencies
+        | None -> [||]
+
+    member _.ExportNames =
+        match exportNames with
+        | Some names -> Array.ofSeq names
         | None -> [||]
 
     interface Compiler with
@@ -332,6 +344,8 @@ type CompilerImpl
                 outType,
                 ?outDir = outDir,
                 ?watchDependencies = watchDependencies,
+                ?importDependencies = importDependencies,
+                ?exportNames = exportNames,
                 logs = logs,
                 isPrecompilingInlineFunction = true
             )
@@ -386,6 +400,18 @@ type CompilerImpl
             match watchDependencies with
             | Some watchDependencies when file <> currentFile -> watchDependencies.Add(file) |> ignore
             | _ -> ()
+
+        member _.AddImportDependency(file) =
+            match importDependencies with
+            | Some dependencies when file <> currentFile -> dependencies.Add(file) |> ignore
+            | _ -> ()
+
+        member _.SetExportNames(names) =
+            match exportNames with
+            | Some existing ->
+                existing.Clear()
+                existing.UnionWith(names)
+            | None -> ()
 
         member _.AddLog(msg, severity, ?range, ?fileName: string, ?tag: string) =
             LogEntry.Make(severity, msg, ?range = range, ?fileName = fileName, ?tag = tag)
