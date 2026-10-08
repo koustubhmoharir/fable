@@ -1435,6 +1435,14 @@ let private compilationCycle (state: State) (changes: ISet<string>) =
                     let newProjCracked, filesToCompile =
                         getFilesToCompile state changes (Some oldFiles) newProjCracked
 
+                    // A new checker starts with an empty Fable project, so every file must be
+                    // compiled again to repopulate the root modules other files refer to.
+                    let filesToCompile =
+                        if Option.isNone fableCompiler then
+                            newProjCracked.SourceFilePaths
+                        else
+                            filesToCompile
+
                     newProjCracked, fableCompiler, filesToCompile
                 else
                     let changes =
@@ -1708,13 +1716,7 @@ let private compilationCycle (state: State) (changes: ISet<string>) =
 
             let state =
                 { state with
-                    // A checker that processed a failed compilation cannot be reused for recovery.
-                    ProjectCrackedAndFableCompiler =
-                        if exitCode = 0 then
-                            Some(projCracked, fableCompiler)
-                        else
-                            None
-                    RecompileAllFiles = exitCode <> 0
+                    ProjectCrackedAndFableCompiler = Some(projCracked, fableCompiler)
                     PendingFiles =
                         if state.PendingFiles.Length = 0 then
                             errorLogs |> Array.choose (fun l -> l.FileName) |> Array.distinct
