@@ -1409,9 +1409,13 @@ let private compilationCycle (state: State) (changes: ISet<string>) =
                     let newProjCracked =
                         ProjectCracked.Init({ cliArgs with NoCache = true }, evaluateOnly = true)
 
-                    // If only source files have changed, keep the project checker to speed up recompilation
+                    // Keep the project checker only when the source list is unchanged: a checker reused
+                    // across an added, removed or reordered source reports duplicate implementations.
                     let fableCompiler =
-                        if oldProjCracked.ProjectOptions.OtherOptions = newProjCracked.ProjectOptions.OtherOptions then
+                        if
+                            oldProjCracked.ProjectOptions.OtherOptions = newProjCracked.ProjectOptions.OtherOptions
+                            && oldProjCracked.SourceFilePaths = newProjCracked.SourceFilePaths
+                        then
                             Some fableCompiler
                         else
                             None
@@ -1704,7 +1708,13 @@ let private compilationCycle (state: State) (changes: ISet<string>) =
 
             let state =
                 { state with
-                    ProjectCrackedAndFableCompiler = Some(projCracked, fableCompiler)
+                    // A checker that processed a failed compilation cannot be reused for recovery.
+                    ProjectCrackedAndFableCompiler =
+                        if exitCode = 0 then
+                            Some(projCracked, fableCompiler)
+                        else
+                            None
+                    RecompileAllFiles = exitCode <> 0
                     PendingFiles =
                         if state.PendingFiles.Length = 0 then
                             errorLogs |> Array.choose (fun l -> l.FileName) |> Array.distinct
